@@ -1,30 +1,87 @@
-from decimal import Decimal
-from datetime import datetime
+import logging
+logger = logging.getLogger(__name__)
 
-from django.utils.timezone import make_aware
-from django.core.validators import DecimalValidator 
-from django.core.exceptions import ValidationError
+import time
+import csv
+from decimal import Decimal
+from datetime import datetime, timedelta
+
 from django.contrib import messages
 from django.contrib.auth import update_session_auth_hash
-from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.auth.forms import PasswordChangeForm
+from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.auth.views import PasswordChangeView as PasswordChangeViewBase
-from django.http import HttpResponse, JsonResponse
-from django.template.loader import render_to_string
-from django.urls import reverse, reverse_lazy
+from django.core.exceptions import ValidationError
+from django.core.validators import DecimalValidator 
+from django.db.models import Q, Avg, Count, Min, Sum
+from django.http import HttpResponse, HttpResponseNotFound, JsonResponse
 from django.shortcuts import get_object_or_404, render
-from django.views.generic.base import TemplateView
-from django.views.generic.edit import FormView, UpdateView, CreateView
-from django.views.generic import ListView, DetailView
+from django.template.loader import render_to_string
+from django.utils.timezone import make_aware
+from django.urls import reverse, reverse_lazy
+from django.views.generic.base import TemplateView, View
+from django.views.generic.edit import CreateView, FormView, UpdateView
+from django.views.generic import DetailView, ListView
+
 from .models import *
 from .forms import *
 
 
 class DashboardView(LoginRequiredMixin, TemplateView):
-    template_name='onlinebanking/base.html'
+    template_name='onlinebanking/home.html'
     def get_context_data(self, **kwargs):
+        last_month = make_aware(datetime.today() - timedelta(days=30))
+        last_3_month = make_aware(datetime.today() - timedelta(days=90))
+        last_year = make_aware(datetime.today() - timedelta(days=365.25))
+        
         context = super(DashboardView, self).get_context_data(**kwargs)
-        context['accounts'] = Account.objects.filter(user=self.request.user)
+        
+        triggers = Trigger.objects.filter(Q(
+            Q(accounttrigger__user=self.request.user) | 
+            Q(transactiontrigger__user=self.request.user) | 
+            Q(usertrigger__user=self.request.user))
+        )
+        trig_cnt_month = {}
+        for trigger in triggers:
+            notification_count = Notification.objects.filter(created__gte=last_month, triggered_by=trigger).count()
+            if notification_count > 0:
+                trig_cnt_month[trigger.name] = notification_count
+        context['triggers_month'] = trig_cnt_month
+
+        trig_cnt_year = {}
+        for trigger in triggers:
+            notification_count = Notification.objects.filter(created__gte=last_year, triggered_by=trigger).count()
+            if notification_count > 0:
+                trig_cnt_year[trigger.name] = notification_count
+        context['triggers_year'] = trig_cnt_year
+
+        context['total_triggers'] = Notification.objects.filter(user=self.request.user).count()
+
+        accounts = Account.objects.filter(user=self.request.user)
+
+        x = 12 # 12 months ago
+        now = time.localtime()
+        past_12_mo = sorted([
+            time.localtime(
+                time.mktime(
+                    (now.tm_year, now.tm_mon - n, 1, 0, 0, 0, 0, 0, 0)
+                )
+            )[:2] for n in range(x)
+        ])
+
+        acct_bal_by_month = {}
+        for account in accounts:
+            acct_bal_by_month[account]={}
+            for year, month in past_12_mo:
+                transaction_final = Transaction.objects.filter(account=account, posted__month=month, posted__year=year).first()
+                if transaction_final:
+                    acct_bal_by_month[account][month] = transaction_final.balance
+                else:
+                    acct_bal_by_month[account][month] = 0
+
+        context['past_12_mo'] = [datetime(year=year, month=month, day=1).strftime('%B') for year, month in past_12_mo]
+        context['acct_bal_by_month'] = acct_bal_by_month
+        context['accounts'] = accounts
         context['notification_count'] = Notification.objects.filter(user=self.request.user, read=None).count()
         return context
 
@@ -55,7 +112,7 @@ class TransactionCreateView(LoginRequiredMixin, FormView):
     form_class = TransactionForm
 
     def form_valid(self, form):
-        account = Account.objects.get(account_number=self.kwargs.get('accountid'))
+        account = get_object_or_404(Account, pk=self.kwargs.get('pk'), user=self.request.user)
         account.balance += form.instance.amount
 
         decimal_validator = DecimalValidator(DECIMAL_MAX, 2)
@@ -71,13 +128,14 @@ class TransactionCreateView(LoginRequiredMixin, FormView):
         form.instance.transaction_number = account.last_transaction_number
 
         form.instance.account = account
-
-        account.save()
+        
         form.save()
+        account.save()
+        
         return super(FormView, self).form_valid(form)
 
     def get_success_url(self):
-        return reverse_lazy('listAccountTransaction', kwargs={'accountid': self.kwargs.get('accountid')})
+        return reverse_lazy('listAccountTransaction', kwargs={'pk': self.kwargs.get('pk')})
 
     def get_form_kwargs(self):
         kwargs = super(TransactionCreateView, self).get_form_kwargs()
@@ -91,20 +149,45 @@ class TransactionCreateView(LoginRequiredMixin, FormView):
         context['button_text'] = 'Add Transaction'
         return context   
 
+class ExportTransactionView(LoginRequiredMixin, View):
+    def get(self, request, *args, **kwargs):
+        account_pk = self.kwargs.get('pk')
+        account = Account.objects.get(pk=account_pk)
+        transactions = Transaction.objects.filter(account__pk=account_pk)
+        
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = f'attachment; filename="{account.account_type}_{str(account.account_number)[-4:]}_export.csv"'
+
+        
+
+        writer = csv.writer(response)
+        writer.writerow(['Posted', 'Description', 'Amount', 'Type', 'Balance'])
+        for transaction in transactions:
+            writer.writerow([
+                transaction.posted.strftime('%x %X'), 
+                transaction.description,
+                transaction.amount,
+                transaction.type,
+                transaction.balance
+            ])
+
+
+        return response
+
 class TransactionListView(LoginRequiredMixin, ListView):
     model = Transaction
     context_object_name = 'transactions'
     template_name = 'onlinebanking/transaction_list.html'
 
     def get_queryset(self):
-        accountid = self.kwargs.get('accountid')
+        pk = self.kwargs.get('pk')
         queryset = super(TransactionListView, self).get_queryset()
-        queryset = Transaction.objects.filter(account__account_number=accountid)
+        queryset = Transaction.objects.filter(account__pk=pk, account__user=self.request.user)
         return queryset
 
     def get_context_data(self, **kwargs):
         context = super(TransactionListView, self).get_context_data(**kwargs)
-        context['accountid'] = self.kwargs.get('accountid')
+        context['pk'] = self.kwargs.get('pk')
         context['accounts'] = Account.objects.filter(user=self.request.user)
         context['notification_count'] = Notification.objects.filter(user=self.request.user, read=None).count()
         return context
@@ -130,7 +213,7 @@ class TransactionTriggerCreateView(LoginRequiredMixin, FormView):
         context = super(TransactionTriggerCreateView, self).get_context_data(**kwargs)
         context['accounts'] = Account.objects.filter(user=self.request.user)
         context['notification_count'] = Notification.objects.filter(user=self.request.user, read=None).count()
-        context['form_name'] = 'Create a Transaction Trigger'
+        context['form_name'] = 'Create a Transaction Notification Trigger'
         context['button_text'] = 'Create Transaction Trigger'
         return context
 
@@ -140,7 +223,7 @@ class UserChangeView(LoginRequiredMixin, UpdateView):
     model = User
 
     def form_valid(self, form):
-        form.save()
+        #form.save()
         return super(UpdateView, self).form_valid(form)
 
     def get_object(self):
@@ -210,10 +293,9 @@ class AjaxableResponseMixin:
             response = render(self.request, self.success_template_name, self.ajax_context())
         return response
 
-
 class ToggleTriggerView(LoginRequiredMixin, TemplateView):
     def get(self, request, *args, **kwargs):
-        trigger = Trigger.objects.get(pk=self.kwargs.get('pk'))
+        trigger = get_object_or_404(Trigger, Q(pk=self.kwargs.get('pk')) & Q(Q(accounttrigger__user=self.request.user) | Q(transactiontrigger__user=self.request.user) | Q(usertrigger__user=self.request.user)))
         trigger.enabled = not trigger.enabled
         trigger.save()
         return render(self.request, 'onlinebanking/toggle_trigger.html', {
@@ -266,7 +348,7 @@ class AccountTriggerUpdateView(TriggerUpdateView):
     model = AccountTrigger
 
     def get_object(self):
-        return self.model.objects.get(pk=self.kwargs.get('pk'))
+        return self.model.objects.get(pk=self.kwargs.get('pk'), user=self.request.user)
 
     def get_success_url(self):
         return reverse('accountTriggerUpdate', kwargs={'pk': self.kwargs.get('pk')})
@@ -299,7 +381,7 @@ class AccountTriggerCreateView(TriggerCreateView):
 
 class AccountTriggerDeleteView(LoginRequiredMixin, TemplateView):
     def get(self, request, *args, **kwargs):
-        trigger = Trigger.objects.get(pk=self.kwargs.get('pk'))
+        trigger = Trigger.objects.get(Q(pk=self.kwargs.get('pk')) & Q(Q(accounttrigger__user=self.request.user) | Q(transactiontrigger__user=self.request.user) | Q(usertrigger__user=self.request.user)))
         trigger.delete()
         return render(self.request, 'onlinebanking/account_trigger_list.html', {
             'account_triggers': AccountTrigger.objects.filter(user=self.request.user)
@@ -313,7 +395,7 @@ class TransactionTriggerUpdateView(TriggerUpdateView):
     model = TransactionTrigger
 
     def get_object(self):
-        return self.model.objects.get(pk=self.kwargs.get('pk'))
+        return self.model.objects.get(pk=self.kwargs.get('pk'), user=self.request.user)
 
     def get_success_url(self):
         return reverse('transactionTriggerUpdate', kwargs={'pk': self.kwargs.get('pk')})
@@ -346,17 +428,28 @@ class TransactionTriggerCreateView(TriggerCreateView):
 
 class TransactionTriggerDeleteView(LoginRequiredMixin, TemplateView):
     def get(self, request, *args, **kwargs):
-        trigger = Trigger.objects.get(pk=self.kwargs.get('pk'))
+        trigger = Trigger.objects.get(Q(pk=self.kwargs.get('pk')) & Q(Q(accounttrigger__user=self.request.user) | Q(transactiontrigger__user=self.request.user) | Q(usertrigger__user=self.request.user)))
         trigger.delete()
         return render(self.request, 'onlinebanking/transaction_trigger_list.html', {
             'transaction_triggers': TransactionTrigger.objects.filter(user=self.request.user)
         })
+
+class NotificationDeleteView(LoginRequiredMixin, DetailView):
+    model = Notification
+
+    def get(self, request, *args, **kwargs):
+        notification = self.get_object()
+        notification.deleted = True
+        notification.save()
+        return HttpResponse("deleted", content_type="text/plain")
 
 class NotificationDetailView(LoginRequiredMixin, DetailView):
     model = Notification
 
     def get(self, request, *args, **kwargs):
         notification = self.get_object()
+        if notification.user != request.user:
+            return HttpResponseNotFound()
         if not notification.read:
             notification.read = make_aware(datetime.now())
             notification.save()
@@ -366,6 +459,12 @@ class NotificationListView(LoginRequiredMixin, ListView):
     model = Notification
     context_object_name = 'notifications'
     template_name = 'onlinebanking/notification_list.html'
+
+
+    def get_queryset(self):
+        queryset = super(NotificationListView, self).get_queryset()
+        queryset = Notification.objects.filter(user=self.request.user, deleted=False)
+        return queryset
 
     def get_context_data(self, **kwargs):
         context = super(NotificationListView, self).get_context_data(**kwargs)

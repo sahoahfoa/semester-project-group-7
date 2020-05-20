@@ -29,7 +29,7 @@
 </head>
 <body>
   <nav class="navbar navbar-light sticky-top bg-light flex-md-nowrap p-0 shadow-sm">
-    <span class="navbar-brand bg-light col-md-2 mr-0 text-center"><img src="/static/img/logo.svg" alt="" id="logo"></span>
+    <span class="navbar-brand bg-light col-md-2 text-center"><img src="/static/img/logo.svg" alt="" id="logo"></span>
     <button class="navbar-toggler position-absolute d-md-none collapsed" type="button" data-toggle="collapse" data-target="#sidebarMenu" aria-controls="sidebarMenu" aria-expanded="false" aria-label="Toggle navigation">
       <span class="navbar-toggler-icon"></span>
     </button>
@@ -67,7 +67,7 @@
             <li class="nav-item">
               <a class="nav-link {% if request.resolver_match.url_name == 'trigger' %}text-secondary{% endif %}" href="{% url 'trigger' %}">
                 <span data-feather="bell" class="{% if request.resolver_match.url_name == 'trigger' %}text-secondary{% endif %}"></span>
-                Triggers {% if request.resolver_match.url_name == 'trigger' %}<span class="sr-only">(current)</span>{% endif %}
+                Setup notifications {% if request.resolver_match.url_name == 'trigger' %}<span class="sr-only">(current)</span>{% endif %}
               </a>
             </li>
             <li class="nav-item">
@@ -87,9 +87,9 @@
           <ul class="nav flex-column mb-2">
             {% for acct in accounts %}
                 <li class="nav-item">
-                  <a class="nav-link {% if request.resolver_match.kwargs.accountid == acct.account_number %}text-secondary{% endif %}" href="{% url 'listAccountTransaction' acct.account_number %}">
+                  <a class="nav-link {% if request.resolver_match.kwargs.pk == acct.pk %}text-secondary{% endif %}" href="{% url 'listAccountTransaction' acct.pk %}">
                     <div>
-                      <span class="{% if request.resolver_match.kwargs.accountid == acct.account_number %}text-secondary{% endif %}" 
+                      <span class="{% if request.resolver_match.kwargs.pk == acct.pk %}text-secondary{% endif %}" 
                     {% if acct.account_type|upper == 'SAVINGS' %}
                        data-feather="dollar-sign">
                     {% elif acct.account_type|upper  == 'CHECKING' %}
@@ -103,7 +103,7 @@
                     </div>
                     <div class='overflow-hidden text-nowrap'>
                       <span data-feather="corner-down-right" class="invisible"></span>
-                    {{ acct.account_number }} - {% if acct.balance < 0 %}
+                      ****{{acct.account_number|stringformat:'d'|slice:'-4:'}} - {% if acct.balance < 0 %}
                       <span style="color:rgb(196, 0, 0);">-${{ acct.balance|intcomma|slice:"1:" }}
                     {% else %}
                       <span>${{ acct.balance|intcomma }}
@@ -134,6 +134,34 @@
   <script src="/static/js/feather.min.js"></script>
   <script>
     feather.replace()
+  </script>
+  <script>
+  /*
+    $(function () {
+      function checkLoginRedir(req){
+        var redir = req.getResponseHeader('x-login');
+        if(redir && redir !== ""){
+            window.location.replace(redir);
+            return true;
+        }
+        return false;
+      }
+  */
+      /* Check user pulse. Redirect if session invalid */
+  /*
+      setInterval( function (){
+        $.ajax({
+          url: '/',
+          type: 'get',
+          success: function(data, textStatus, request){
+            if (checkLoginRedir(request)) return;
+          }
+        });
+      }, 10 * 60 * 1000 + 10000); // 10 minutes + 10 seconds
+
+    });
+  */
+
   </script>
   {% block bootstrap4_extra_script %}{% endblock %}
 

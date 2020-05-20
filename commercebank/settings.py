@@ -34,6 +34,7 @@ ALLOWED_HOSTS = os.getenv('DJANGO_ALLOWED_HOSTS', '127.0.0.1').split(',')
 INSTALLED_APPS = [
     'onlinebanking.apps.OnlinebankingConfig',
     'bootstrap4',
+    'preventconcurrentlogins',
     'django.contrib.humanize',
     'django.contrib.admin',
     'django.contrib.auth',
@@ -51,6 +52,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'preventconcurrentlogins.middleware.PreventConcurrentLoginsMiddleware',
 ]
 
 ROOT_URLCONF = 'commercebank.urls'
@@ -71,7 +73,7 @@ TEMPLATES = [
     },
 ]
 
-STATIC_ROOT = '/app/static'
+
 
 WSGI_APPLICATION = 'commercebank.wsgi.application'
 
@@ -100,14 +102,27 @@ AUTH_PASSWORD_VALIDATORS = [
     {
         'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
     },
-    {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
-    },
+
     {
         'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
     },
     {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+        'OPTIONS': {
+            'min_length': 8,
+        }
+    },
+    {
+        'NAME': 'commercebank.password_validation.NumberValidator',
+    },
+    {
+        'NAME': 'commercebank.password_validation.UppercaseValidator',
+    },
+    {
+        'NAME': 'commercebank.password_validation.LowercaseValidator',
+    },
+    {
+        'NAME': 'commercebank.password_validation.SymbolValidator',
     },
 ]
 
@@ -128,22 +143,25 @@ USE_TZ = True
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/3.0/howto/static-files/
-
+STATIC_ROOT = '/app/static/'
 STATIC_URL = '/static/'
 
-SESSION_COOKIE_AGE = 60 * 60 * 24 * 30  # One month
+SESSION_COOKIE_AGE = 60 * 10  # Ten minutes in seconds
+SESSION_SAVE_EVERY_REQUEST = True # "sliding" session expiration. This should be enforced on the session side as well.
 
 LOGIN_URL='/login/'
 LOGIN_REDIRECT_URL='/onlinebanking/'
 LOGOUT_REDIRECT_URL='/'
 
-EMAIL_HOST='cloud.scottah.com'
-EMAIL_HOST_USER='commercebank.umkc@cloud.scottah.com'
-EMAIL_HOST_PASSWORD=os.getenv('EMAIL_PASSWD')
-EMAIL_PORT=587
-EMAIL_USE_TLS=True
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST=os.getenv('SMTP_HOST')
+EMAIL_HOST_USER=os.getenv('EMAIL_USER')
+EMAIL_HOST_PASSWORD=os.getenv('EMAIL_PASS')
+EMAIL_PORT=os.getenv('SMTP_PORT', 587)
+EMAIL_USE_TLS=os.getenv('SMTP_USE_TLS', True)
+EMAIL_USE_SSL=os.getenv('SMTP_USE_SSL', False)
 
-DEFAULT_FROM_EMAIL = "commercebank.umkc@cloud.scottah.com"
+DEFAULT_FROM_EMAIL = os.getenv('EMAIL_FROM')
 ADMIN_EMAIL = DEFAULT_FROM_EMAIL
 SUPPORT_EMAIL = DEFAULT_FROM_EMAIL
 DEFAULT_FROM_EMAIL = DEFAULT_FROM_EMAIL
@@ -242,17 +260,33 @@ logging.config.dictConfig({
         'console': {
             'format': '%(asctime)s %(levelname)s [%(name)s:%(lineno)s] %(module)s %(process)d %(thread)d %(message)s',
         },
+        'colored_verbose': {
+            '()': 'colorlog.ColoredFormatter',
+            'format': "%(log_color)s%(levelname)-s %(red)s%(module)-s [%(name)-s%(lineno)s] %(reset)s %(blue)s%(message)s"
+        },
     },
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler',
             'formatter': 'console',
         },
+        'colored_console': {
+            'level': 'INFO',
+            'class': 'logging.StreamHandler',
+            'formatter': 'colored_verbose'
+        }
     },
     'loggers': {
         '': {
             'level': LOGLEVEL,
-            'handlers': ['console',],
+            'handlers': ['colored_console',],
         },
+        'gunicorn.access': {
+            'handlers': ['colored_console']
+        },
+        'gunicorn.error': {
+            'handlers': ['colored_console']
+        }
     },
 })
+
